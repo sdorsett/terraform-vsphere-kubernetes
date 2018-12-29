@@ -126,3 +126,11 @@ resource "vsphere_virtual_machine" "kubernetes_controller" {
   }
 
 }
+
+data "external" "kubeadm-init-info" {
+  program = ["/usr/bin/bash", "${path.module}/scripts/kubeadm_init_info.sh"]
+  query = {
+    ip_address  = "${vsphere_virtual_machine.kubernetes_controller.0.default_ip_address}"
+    private_key = "${var.virtual_machine_kubernetes_controller.["private_key"]}"
+  }
+}
