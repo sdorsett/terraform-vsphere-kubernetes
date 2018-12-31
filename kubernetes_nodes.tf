@@ -1,41 +1,26 @@
-provider "vsphere" {
-  user           = "${var.vsphere_connection.["vsphere_user"]}"
-  password       = "${var.vsphere_connection.["vsphere_password"]}"
-  vsphere_server = "${var.vsphere_connection.["vsphere_server"]}"
-  allow_unverified_ssl = true
-}
-
-data "vsphere_datacenter" "template_datacenter" {
-  name = "${var.virtual_machine_template.["datacenter"]}"
-}
-
-data "vsphere_datastore" "vm_datastore" {
-  name          = "${var.virtual_machine_kubernetes_controller.["datastore"]}"
+data "vsphere_datastore" "node_datastore" {
+  name          = "${var.virtual_machine_kubernetes_node.["datastore"]}"
   datacenter_id = "${data.vsphere_datacenter.template_datacenter.id}"
 }
 
-data "vsphere_resource_pool" "vm_resource_pool" {
-  name          = "${var.virtual_machine_kubernetes_controller.["resource_pool"]}"
+data "vsphere_resource_pool" "node_resource_pool" {
+  name          = "${var.virtual_machine_kubernetes_node.["resource_pool"]}"
   datacenter_id = "${data.vsphere_datacenter.template_datacenter.id}"
 }
 
-data "vsphere_network" "vm_network" {
-  name          = "${var.virtual_machine_kubernetes_controller.["network"]}"
+data "vsphere_network" "node_network" {
+  name          = "${var.virtual_machine_kubernetes_node.["network"]}"
   datacenter_id = "${data.vsphere_datacenter.template_datacenter.id}"
 }
 
-data "vsphere_virtual_machine" "template" {
-  name          = "${var.virtual_machine_template.["name"]}"
-  datacenter_id = "${data.vsphere_datacenter.template_datacenter.id}"
-}
-
-resource "vsphere_virtual_machine" "kubernetes_controller" {
-  name             = "${var.virtual_machine_kubernetes_controller.["name"]}"
+resource "vsphere_virtual_machine" "kubernetes_nodes" {
+  count            = "${var.virtual_machine_kubernetes_node.["count"]}"
+  name             = "${format("${var.virtual_machine_kubernetes_node.["prefix"]}-%03d", count.index + 1)}"
   resource_pool_id = "${data.vsphere_resource_pool.vm_resource_pool.id}"
   datastore_id     = "${data.vsphere_datastore.vm_datastore.id}"
 
-  num_cpus = "${var.virtual_machine_kubernetes_controller.["num_cpus"]}"
-  memory   = "${var.virtual_machine_kubernetes_controller.["memory"]}"
+  num_cpus = "${var.virtual_machine_kubernetes_node.["num_cpus"]}"
+  memory   = "${var.virtual_machine_kubernetes_node.["memory"]}"
   guest_id = "${data.vsphere_virtual_machine.template.guest_id}"
 
   scsi_type = "${data.vsphere_virtual_machine.template.scsi_type}"
@@ -55,19 +40,19 @@ resource "vsphere_virtual_machine" "kubernetes_controller" {
 
     customize {
       linux_options {
-        host_name = "${var.virtual_machine_kubernetes_controller.["name"]}"
+        host_name = "${format("${var.virtual_machine_kubernetes_node.["prefix"]}-%03d", count.index + 1)}"
         domain    = "kubernetes.local"
       }
 
-      dns_server_list = ["${var.virtual_machine_kubernetes_controller.["dns_server"]}"]
+      dns_server_list = ["${var.virtual_machine_kubernetes_node.["dns_server"]}"]
       dns_suffix_list = ["kubernetes.local"]
 
       network_interface {
-        ipv4_address = "${var.virtual_machine_kubernetes_controller.["ip_address"]}"
-        ipv4_netmask = "${var.virtual_machine_kubernetes_controller.["netmask"]}"
+        ipv4_address = "${cidrhost( var.virtual_machine_kubernetes_node.["ip_address_network"], var.virtual_machine_kubernetes_node.["starting_hostnum"]+count.index )}"
+        ipv4_netmask = "${element( split("/", var.virtual_machine_kubernetes_node.["ip_address_network"]), 1)}"
       }
 
-      ipv4_gateway = "${var.virtual_machine_kubernetes_controller.["gateway"]}"
+      ipv4_gateway = "${var.virtual_machine_kubernetes_node.["gateway"]}"
     }
   }
 
@@ -115,8 +100,6 @@ resource "vsphere_virtual_machine" "kubernetes_controller" {
       "sudo /tmp/system_setup.sh",
       "sudo /tmp/install_docker.sh",
       "sudo /tmp/install_kubernetes_packages.sh",
-      "sudo /tmp/kubeadm_init.sh",
-      "tail -n2 /tmp/kubeadm_init_output.txt | head -n 1",
     ]
     connection {
       type          = "${var.virtual_machine_template.["connection_type"]}"
@@ -127,10 +110,17 @@ resource "vsphere_virtual_machine" "kubernetes_controller" {
 
 }
 
-data "external" "kubeadm-init-info" {
-  program = ["/usr/bin/bash", "${path.module}/scripts/kubeadm_init_info.sh"]
-  query = {
-    ip_address  = "${vsphere_virtual_machine.kubernetes_controller.0.default_ip_address}"
-    private_key = "${var.virtual_machine_kubernetes_controller.["private_key"]}"
+resource "null_resource" "kubeadm_join" {
+  count            = "${var.virtual_machine_kubernetes_node.["count"]}"
+  provisioner "remote-exec" {
+    inline = [
+       "kubeadm join --token ${data.external.kubeadm-init-info.result.token} ${vsphere_virtual_machine.kubernetes_controller.0.default_ip_address}:6443 --discovery-token-ca-cert-hash sha256:${data.external.kubeadm-init-info.result.certhash}",
+    ]
+    connection {
+      type          = "${var.virtual_machine_template.["connection_type"]}"
+      user          = "${var.virtual_machine_template.["connection_user"]}"
+      private_key   = "${file("${var.virtual_machine_kubernetes_controller.["private_key"]}")}"
+      host          = "${element(vsphere_virtual_machine.kubernetes_nodes.*.default_ip_address, count.index)}" 
+    }
   }
 }
