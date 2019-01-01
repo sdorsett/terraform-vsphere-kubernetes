@@ -7,7 +7,7 @@ output "node_ips" {
 output "controller_vm-moref" {
    value = "${vsphere_virtual_machine.kubernetes_controller.moid}"
 }
-output "node_vm-mores" {
+output "node_vm-morefs" {
    value = "${vsphere_virtual_machine.kubernetes_nodes.*.moid}"
 }
 output "kubeadm-init-info" {
